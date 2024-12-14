@@ -1,79 +1,75 @@
-import random
 import pandas as pd
 import numpy as np
 import os
 import pickle
+from sklearn.preprocessing import LabelEncoder
 
-def encode_class(data):
-    classes = []
-    for i in range(len(data)):
-        if data[i][-1] not in classes:
-            classes.append(data[i][-1])
-    for i in range(len(classes)):
-        for j in range(len(data)):
-            if data[j][-1] == classes[i]:
-                data[j][-1] = i
-    return data
+class CustomNaiveBayes:
+    def __init__(self):
+        self.class_summaries = {}
+        self.classes = None
 
-def split_data(data, ratio):
-    train_num = int(len(data) * ratio)
-    train = []
-    test = list(data)
-    while len(train) < train_num:
-        index = random.randrange(len(test))
-        train.append(test.pop(index))
-    return train, test
+    def fit(self, X, y):
+        self.classes = np.unique(y)
+        data = np.c_[X, y]
+        self.class_summaries = self._mean_stddev_per_class(data)
 
-def group_by_class(data):
-    data_dict = {}
-    for i in range(len(data)):
-        if data[i][-1] not in data_dict:
-            data_dict[data[i][-1]] = []
-        data_dict[data[i][-1]].append(data[i])
-    return data_dict
+    def _mean_stddev_per_class(self, data):
+        info = {}
+        for class_value in self.classes:
+            instances = data[data[:, -1] == class_value]
+            features = instances[:, :-1]
+            means = np.mean(features, axis=0)
+            stdevs = np.std(features, axis=0)
+            info[class_value] = (means, stdevs)
+        return info
 
-def mean_std_dev(numbers):
-    avg = np.mean(numbers)
-    stddev = np.std(numbers)
-    return avg, stddev
+    def _calculate_gaussian_probability(self, x, means, stdevs):
+        exponent = np.exp(-((x - means) ** 2) / (2 * (stdevs ** 2 + 1e-10)))
+        result = exponent / (np.sqrt(2 * np.pi) * (stdevs + 1e-10))
+        return result
 
-def mean_std_dev_per_class(data):
-    info = {}
-    data_dict = group_by_class(data)
-    for class_value, instances in data_dict.items():
-        transposed_instances = list(zip(*instances))
-        feature_stats = [mean_std_dev(feature) for feature in transposed_instances[:-1]]
-        info[class_value] = feature_stats
-    return info
+    def predict(self, X):
+        predictions = []
+        for i in range(X.shape[0]):
+            x = X[i]
+            log_probs = {}
+            for class_value in self.classes:
+                means, stdevs = self.class_summaries[class_value]
+                probs = self._calculate_gaussian_probability(x, means, stdevs)
+                log_probs[class_value] = np.sum(np.log(probs + 1e-10))
+            predictions.append(max(log_probs, key=log_probs.get))
+        return predictions
 
-def calculate_gaussian_probability(X, means, stdevs):
-    epsilon = 1e-10
-    means = np.array(means)
-    stdevs = np.array(stdevs)
-    probabilities = np.zeros_like(X, dtype=float)
-    for j in range(X.shape[1]):
-        exponent = -((X[:, j] - means[j])**2) / (2 * (stdevs[j] + epsilon)**2)
-        probabilities[:, j] = np.exp(exponent) / (np.sqrt(2 * np.pi) * (stdevs[j] + epsilon))
-    return probabilities
+    def predict_proba(self, X):
+        probabilities = []
+        for i in range(X.shape[0]):
+            x = X[i]
+            class_probs = {}
+            for class_value in self.classes:
+                means, stdevs = self.class_summaries[class_value]
+                probs = self._calculate_gaussian_probability(x, means, stdevs)
+                log_prob = np.sum(np.log(probs + 1e-10))
+                class_probs[class_value] = log_prob
+            total_log_prob = np.logaddexp.reduce(list(class_probs.values()))
+            probs_exp = {k: np.exp(v - total_log_prob) for k, v in class_probs.items()}
+            probabilities.append(probs_exp)
+        return probabilities
 
-def get_predictions(info, test_data):
-    test_array = np.array(test_data)
-    X = test_array[:, :-1]
-    log_class_probs = {}
-    for class_value, class_summaries in info.items():
-        means = [summary[0] for summary in class_summaries]
-        stdevs = [summary[1] for summary in class_summaries]
-        feature_probs = calculate_gaussian_probability(X, means, stdevs)
-        log_class_probs[class_value] = np.sum(np.log(feature_probs + 1e-10), axis=1)
-    prob_array = np.array(list(log_class_probs.values())).T
-    predictions = [list(info.keys())[np.argmax(probs)] for probs in prob_array]
-    return predictions
+    def accuracy(self, y_true, y_pred):
+        correct = np.sum(y_true == y_pred)
+        return (correct / len(y_true)) * 100.0
 
-def accuracy_rate(test, predictions):
-    correct = sum(1 for i in range(len(test)) if test[i][-1] == predictions[i])
-    return (correct / float(len(test))) * 100.0
+    def log_loss(self, y_true, y_pred_proba):
+        eps = 1e-15
+        n_classes = len(self.classes)
+        y_true_one_hot = np.eye(n_classes)[y_true.astype(int)]
+        y_pred_proba_array = np.array([[proba.get(c, eps) for c in self.classes] for proba in y_pred_proba])
+        y_pred_proba_array = np.clip(y_pred_proba_array, eps, 1 - eps)
+        loss = -np.sum(y_true_one_hot * np.log(y_pred_proba_array)) / len(y_true)
+        return loss
 
-# Main Test Driver
+# Data loading and preprocessing
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 additional_features_path = os.path.join(script_dir, '..', 'dataset', 'train', 'additional_features_train.csv')
@@ -96,42 +92,67 @@ data = pd.merge(data, flow_features_df, on="id")
 data = pd.merge(data, labels_df, on="id")
 data = pd.merge(data, time_features_df, on="id")
 
-# buat testing, pake yang numerikal aja dan hapus yang nan
+##### PREPROCESSING ASAL AEK #####
+le = LabelEncoder()
+data['attack_cat_encoded'] = le.fit_transform(data['attack_cat'].astype(str))
+
+if 'label' in data.columns:
+    data = data.drop(columns=['label'])
+
+columns = list(data.columns)
+columns.remove('attack_cat_encoded')
+columns.append('attack_cat_encoded')
+data = data[columns]
+
 data = data.select_dtypes(include=[np.number])
 data = data.dropna()
 
-data_list = data.values.tolist()
-for i in range(len(data_list)):
-    for j in range(len(data_list[i]) - 1):
-        data_list[i][j] = float(data_list[i][j])
+X = data.iloc[:, :-1].values
+y = data.iloc[:, -1].values.astype(int)
 
-ratio = 0.7 # ini ntar atur atur lah ya
-train_data, test_data = split_data(data_list, ratio)
+ratio = 0.7
+train_num = int(len(X) * ratio)
+indices = np.random.permutation(len(X))
+train_indices = indices[:train_num]
+test_indices = indices[train_num:]
 
-print('Total number of examples:', len(data_list))
-print('Training examples:', len(train_data))
-print('Test examples:', len(test_data))
+X_train = X[train_indices]
+y_train = y[train_indices]
+X_test = X[test_indices]
+y_test = y[test_indices]
 
-#* training
-info = mean_std_dev_per_class(train_data)
+print('Total number of examples:', len(X))
+print('Training examples:', len(X_train))
+print('Test examples:', len(X_test))
 
-# save model ke .pkl
+##### TRAINING MODEL #####
+model = CustomNaiveBayes()
+model.fit(X_train, y_train)
+
+# Save model to .pkl
 with open('trained_naive_bayes.pkl', 'wb') as file:
-    pickle.dump(info, file)
+    pickle.dump(model, file)
 
 print('Model telah dilatih dan disimpan ke trained_naive_bayes.pkl')
 
-# load model dari .pkl
+# Load model from .pkl
 def load_trained_model(filename):
     with open(filename, 'rb') as file:
-        info = pickle.load(file)
-    return info
+        model = pickle.load(file)
+    return model
 
-info = load_trained_model('trained_naive_bayes.pkl')
+model = load_trained_model('trained_naive_bayes.pkl')
 
 print('Model telah dimuat dari trained_naive_bayes.pkl')
 
-# prediksi
-predictions = get_predictions(info, test_data)
-accuracy = accuracy_rate(test_data, predictions)
+##### EVALUATING MODEL #####
+y_pred = model.predict(X_test)
+
+# Accuracy
+accuracy = model.accuracy(y_test, y_pred)
 print('Akurasi model:', accuracy)
+
+# Calculate Log Loss
+y_pred_proba = model.predict_proba(X_test)
+logloss = model.log_loss(y_test, y_pred_proba)
+print('Log loss model:', logloss)
