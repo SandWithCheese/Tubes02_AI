@@ -1,4 +1,5 @@
 import pandas as pd
+import sklearn.metrics
 import numpy as np
 import os
 import pickle
@@ -150,9 +151,11 @@ y_pred = model.predict(X_test)
 
 # Accuracy
 accuracy = model.accuracy(y_test, y_pred)
+f1_score = sklearn.metrics.f1_score(y_test, y_pred, average='macro')
 print('Akurasi model:', accuracy)
 
 # Calculate Log Loss
 y_pred_proba = model.predict_proba(X_test)
+# f1_score = sklearn.metrics.f1_score(y_test, y_pred_proba, average='macro')
 logloss = model.log_loss(y_test, y_pred_proba)
-print('Log loss model:', logloss)
+print('Log loss model:', f1_score)

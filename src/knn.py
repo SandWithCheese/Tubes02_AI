@@ -1,4 +1,5 @@
 import pandas as pd
+import sklearn.metrics
 import numpy as np
 import os
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, MinMaxScaler
@@ -172,5 +173,6 @@ knn_model.fit(X_train, Y_train)
 
 ##### --- EVALUATING MODEL --- #####
 Y_prediction = knn_model.predict(X_test)
-accuracy = knn_model.accuracy(Y_test, Y_prediction)
-print('Model Accuracy: ', accuracy)
+f1_score = sklearn.metrics.f1_score(Y_test, Y_prediction, average='macro')
+# accuracy = knn_model.accuracy(Y_test, Y_prediction)
+print('Model Accuracy: ', f1_score)
