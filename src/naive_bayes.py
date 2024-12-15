@@ -1,161 +1,63 @@
-import pandas as pd
-import sklearn.metrics
 import numpy as np
-import os
-import pickle
-from sklearn.preprocessing import LabelEncoder
 
 class CustomNaiveBayes:
     def __init__(self):
-        self.class_summaries = {}
         self.classes = None
-
+        self.class_priors = None
+        self.class_means = None
+        self.class_variances = None
+    
     def fit(self, X, y):
+
         self.classes = np.unique(y)
-        data = np.c_[X, y]
-        self.class_summaries = self._mean_stddev_per_class(data)
-
-    def _mean_stddev_per_class(self, data):
-        info = {}
-        for class_value in self.classes:
-            instances = data[data[:, -1] == class_value]
-            features = instances[:, :-1]
-            means = np.mean(features, axis=0)
-            stdevs = np.std(features, axis=0)
-            info[class_value] = (means, stdevs)
-        return info
-
-    def _calculate_gaussian_probability(self, x, means, stdevs):
-        exponent = np.exp(-((x - means) ** 2) / (2 * (stdevs ** 2 + 1e-10)))
-        result = exponent / (np.sqrt(2 * np.pi) * (stdevs + 1e-10))
-        return result
-
-    def predict(self, X):
-        predictions = []
-        for i in range(X.shape[0]):
-            x = X[i]
-            log_probs = {}
-            for class_value in self.classes:
-                means, stdevs = self.class_summaries[class_value]
-                probs = self._calculate_gaussian_probability(x, means, stdevs)
-                log_probs[class_value] = np.sum(np.log(probs + 1e-10))
-            predictions.append(max(log_probs, key=log_probs.get))
-        return predictions
-
-    def predict_proba(self, X):
-        probabilities = []
-        for i in range(X.shape[0]):
-            x = X[i]
-            class_probs = {}
-            for class_value in self.classes:
-                means, stdevs = self.class_summaries[class_value]
-                probs = self._calculate_gaussian_probability(x, means, stdevs)
-                log_prob = np.sum(np.log(probs + 1e-10))
-                class_probs[class_value] = log_prob
-            total_log_prob = np.logaddexp.reduce(list(class_probs.values()))
-            probs_exp = {k: np.exp(v - total_log_prob) for k, v in class_probs.items()}
-            probabilities.append(probs_exp)
-        return probabilities
-
-    def accuracy(self, y_true, y_pred):
-        correct = np.sum(y_true == y_pred)
-        return (correct / len(y_true)) * 100.0
-
-    def log_loss(self, y_true, y_pred_proba):
-        eps = 1e-15
         n_classes = len(self.classes)
-        y_true_one_hot = np.eye(n_classes)[y_true.astype(int)]
-        y_pred_proba_array = np.array([[proba.get(c, eps) for c in self.classes] for proba in y_pred_proba])
-        y_pred_proba_array = np.clip(y_pred_proba_array, eps, 1 - eps)
-        loss = -np.sum(y_true_one_hot * np.log(y_pred_proba_array)) / len(y_true)
-        return loss
+        n_features = X.shape[1]
 
-# Data loading and preprocessing
-script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.class_means = np.zeros((n_classes, n_features))
+        self.class_variances = np.zeros((n_classes, n_features))
+        self.class_priors = np.zeros(n_classes)
 
-additional_features_path = os.path.join(script_dir, '..', 'dataset', 'train', 'additional_features_train.csv')
-basic_features_path = os.path.join(script_dir, '..', 'dataset', 'train', 'basic_features_train.csv')
-content_features_path = os.path.join(script_dir, '..', 'dataset', 'train', 'content_features_train.csv')
-flow_features_path = os.path.join(script_dir, '..', 'dataset', 'train', 'flow_features_train.csv')
-labels_path = os.path.join(script_dir, '..', 'dataset', 'train', 'labels_train.csv')
-time_features_path = os.path.join(script_dir, '..', 'dataset', 'train', 'time_features_train.csv')
+        for i, c in enumerate(self.classes):
+            X_c = X[y == c]
+            self.class_priors[i] = X_c.shape[0] / X.shape[0]
+            self.class_means[i, :] = X_c.mean(axis=0)
+            self.class_variances[i, :] = X_c.var(axis=0) + 1e-7
+        
+        return self
+    
+    def _gaussian_probability(self, x, mean, variance):
+        exponent = np.exp(-((x - mean)**2 / (2 * variance)))
+        return (1 / (np.sqrt(2 * np.pi * variance))) * exponent
+    
+    def predict_proba(self, X):
+        n_samples = X.shape[0]
+        n_classes = len(self.classes)
+        
+        probabilities = np.zeros((n_samples, n_classes))
+        for i in range(n_classes):
+            prior = np.log(self.class_priors[i])
+            conditional = np.sum(np.log(
+                self._gaussian_probability(
+                    X, 
+                    self.class_means[i, :], 
+                    self.class_variances[i, :]
+                ) + 1e-10 
+            ), axis=1)
+            
+            
+            probabilities[:, i] = prior + conditional
+        
+        probabilities = np.exp(probabilities)
+        probabilities /= probabilities.sum(axis=1, keepdims=True)
+        
+        return probabilities
+    
+    def predict(self, X):
+        probabilities = self.predict_proba(X)
+        return self.classes[np.argmax(probabilities, axis=1)]
 
-additional_features_df = pd.read_csv(additional_features_path)
-basic_features_df = pd.read_csv(basic_features_path)
-content_features_df = pd.read_csv(content_features_path)
-flow_features_df = pd.read_csv(flow_features_path)
-labels_df = pd.read_csv(labels_path)
-time_features_df = pd.read_csv(time_features_path)
+    def get_params(self, deep=True):
+        return {}
 
-data = pd.merge(basic_features_df, additional_features_df, on="id")
-data = pd.merge(data, content_features_df, on="id")
-data = pd.merge(data, flow_features_df, on="id")
-data = pd.merge(data, labels_df, on="id")
-data = pd.merge(data, time_features_df, on="id")
-
-##### PREPROCESSING ASAL AEK #####
-le = LabelEncoder()
-data['attack_cat_encoded'] = le.fit_transform(data['attack_cat'].astype(str))
-
-if 'label' in data.columns:
-    data = data.drop(columns=['label'])
-
-columns = list(data.columns)
-columns.remove('attack_cat_encoded')
-columns.append('attack_cat_encoded')
-data = data[columns]
-
-data = data.select_dtypes(include=[np.number])
-data = data.dropna()
-
-X = data.iloc[:, :-1].values
-y = data.iloc[:, -1].values.astype(int)
-
-ratio = 0.7
-train_num = int(len(X) * ratio)
-indices = np.random.permutation(len(X))
-train_indices = indices[:train_num]
-test_indices = indices[train_num:]
-
-X_train = X[train_indices]
-y_train = y[train_indices]
-X_test = X[test_indices]
-y_test = y[test_indices]
-
-print('Total number of examples:', len(X))
-print('Training examples:', len(X_train))
-print('Test examples:', len(X_test))
-
-##### TRAINING MODEL #####
-model = CustomNaiveBayes()
-model.fit(X_train, y_train)
-
-# Save model to .pkl
-with open('trained_naive_bayes.pkl', 'wb') as file:
-    pickle.dump(model, file)
-
-print('Model telah dilatih dan disimpan ke trained_naive_bayes.pkl')
-
-# Load model from .pkl
-def load_trained_model(filename):
-    with open(filename, 'rb') as file:
-        model = pickle.load(file)
-    return model
-
-model = load_trained_model('trained_naive_bayes.pkl')
-
-print('Model telah dimuat dari trained_naive_bayes.pkl')
-
-##### EVALUATING MODEL #####
-y_pred = model.predict(X_test)
-
-# Accuracy
-accuracy = model.accuracy(y_test, y_pred)
-f1_score = sklearn.metrics.f1_score(y_test, y_pred, average='macro')
-print('Akurasi model:', accuracy)
-
-# Calculate Log Loss
-y_pred_proba = model.predict_proba(X_test)
-# f1_score = sklearn.metrics.f1_score(y_test, y_pred_proba, average='macro')
-logloss = model.log_loss(y_test, y_pred_proba)
-print('Log loss model:', f1_score)
+    def set_params(self, **params):
+        return self
